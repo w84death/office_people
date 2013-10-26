@@ -1,10 +1,21 @@
 <!DOCTYPE html>
-<html>
+<!--<html manifest="/cache.manifest">-->
 <head>
-	<title>Impact Game</title>
+	<title>Office People by Krzysztof Jankowski
+	</title>
+	<meta charset="UTF-8">
+  	<meta name="apple-mobile-web-app-capable" content="yes" />
+  	<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+	<link rel="apple-touch-icon-precomposed" sizes="144x144" href="/apple-touch-icon-144x144-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" sizes="114x114" href="/apple-touch-icon-114x114-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" sizes="72x72" href="/apple-touch-icon-72x72-precomposed.png">
+	<link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png">
+	<link rel="shortcut icon" href="/favicon.ico">
+	<script src="/socket.io/socket.io.js"></script>
+
 	<style type="text/css">
 		html,body {
-			background-color: #333;
+			background-color: #000;
 			color: #fff;
 			font-family: helvetica, arial, sans-serif;
 			margin: 0;
@@ -22,10 +33,23 @@
 		}
 	</style>
 
-	<script type="text/javascript" src="lib/impact/impact.js"></script>
-	<script type="text/javascript" src="lib/game/main.js"></script>
+	<script type="text/javascript" src="game.min.js"></script>
 </head>
 <body>
 	<canvas id="canvas"></canvas>
+
+<script type="text/javascript">
+
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-85559-13']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+
+</script>
 </body>
 </html>
