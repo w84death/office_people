@@ -1,0 +1,2 @@
+AddDefaultCharset utf8
+AddType application/x-web-app-manifest+json .webapp

@@ -1,0 +1,22 @@
+﻿{
+    "version": "1.0",
+    "name": "OfficePeople",
+    "description": "Realistic office simulation. Go to work and be a good employee. Or smash everything!",
+    "launch_path": "/index.html",
+    "icons": {
+        "16": "/icons/firefox-16.png",
+        "32": "/icons/firefox-32.png",
+        "48": "/icons/firefox-48.png",
+        "60": "/icons/firefox-60.png",
+        "90": "/icons/firefox-90.png",
+        "120": "/icons/firefox-120.png",
+        "128": "/icons/firefox-128.png",
+        "256": "/icons/firefox-256.png"
+    },
+    "developer": {
+        "name": "P1X.in - Krzysztof Jankowski",
+        "url": "http://p1x.in"
+    },
+    "installs_allowed_from": ["*"],
+    "fullscreen": "true"    
+}
