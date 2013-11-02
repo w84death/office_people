@@ -17,6 +17,7 @@
         "name": "P1X.in - Krzysztof Jankowski",
         "url": "http://p1x.in"
     },
-    "installs_allowed_from": ["*"],
-    "fullscreen": "true"    
+    "fullscreen": "true",
+    "orientation": ["landscape", "landscape-secondary"],
+    "type": "web"
 }

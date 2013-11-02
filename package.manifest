@@ -1,0 +1,11 @@
+{
+    "name": "OfficePeople",
+    "package_path" : "http://p1x.in/pub/op/office_people_update5.zip",
+    "version": "0.5",
+	"size": 84093,
+	"release_notes": "First release",
+    "developer": {
+        "name": "P1X.in - Krzysztof Jankowski",
+        "url": "http://p1x.in"
+    }
+}
