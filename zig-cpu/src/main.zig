@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("fenster.h");
+    @cInclude("stdio.h");
+    @cInclude("sys/stat.h");
 });
 
 const CONF = @import("engine/config.zig").CONF;
@@ -20,9 +22,16 @@ const SCORE_TRIGGER = 100;
 const SCORE_USE = 50;
 const LEVEL_TIME_LIMIT = 60.0;
 const MOD_CTRL = 1;
+const EDITOR_PANEL_X = 176;
+const EDITOR_PANEL_W = CONF.SCREEN_W - EDITOR_PANEL_X;
+const EDITOR_MAX_OFFICE = 24 * 14;
+const EDITOR_MAX_COLLISION = 48 * 28;
+const EDITOR_SLOTS = 9;
 
-const GameState = enum { intro, menu, game, level_clear, game_over, end };
+const GameState = enum { intro, menu, game, level_clear, game_over, end, editor };
 const Direction = enum { up, right, down, left };
+const EditorMode = enum { tiles, collision, entities };
+const EditorSize = enum { small, medium, big };
 
 const Rect = struct { x: i32, y: i32, w: i32, h: i32 };
 
@@ -72,6 +81,73 @@ const EntityInfo = struct {
 const Activation = struct {
     score: i32,
     timer: i32 = 0,
+};
+
+const EditorDims = struct { ow: usize, oh: usize, cw: usize, ch: usize };
+
+const EditorEntityKinds = [_]Levels.EntityKind{ .employee, .npc_employee, .desk, .chair, .plant, .water, .lack, .bookstand, .fridge, .kitchen_cabinet, .kitchen_coffee, .kitchen_sink, .door, .door_vertical, .elevator };
+
+const RuntimeLevel = struct {
+    active: bool = false,
+    office_buf: [EDITOR_MAX_OFFICE]u16 = [_]u16{0} ** EDITOR_MAX_OFFICE,
+    collision_buf: [EDITOR_MAX_COLLISION]u8 = [_]u8{0} ** EDITOR_MAX_COLLISION,
+    entity_buf: [MAX_ENTITIES]Levels.EntityDef = undefined,
+    entity_count: usize = 0,
+    level: Levels.Level = .{ .entities = &.{}, .office_w = 12, .office_h = 6, .office = &.{}, .collision_w = 24, .collision_h = 12, .collision_tile = 8, .collision = &.{} },
+
+    fn setSize(self: *RuntimeLevel, size: EditorSize) void {
+        const dims: EditorDims = switch (size) {
+            .small => .{ .ow = 12, .oh = 6, .cw = 24, .ch = 12 },
+            .medium => .{ .ow = 14, .oh = 14, .cw = 28, .ch = 28 },
+            .big => .{ .ow = 24, .oh = 8, .cw = 48, .ch = 16 },
+        };
+        @memset(self.office_buf[0 .. dims.ow * dims.oh], 0);
+        @memset(self.collision_buf[0 .. dims.cw * dims.ch], 0);
+        self.entity_count = 0;
+        self.level.office_w = dims.ow;
+        self.level.office_h = dims.oh;
+        self.level.office = self.office_buf[0 .. dims.ow * dims.oh];
+        self.level.collision_w = dims.cw;
+        self.level.collision_h = dims.ch;
+        self.level.collision_tile = 8;
+        self.level.collision = self.collision_buf[0 .. dims.cw * dims.ch];
+        self.level.entities = self.entity_buf[0..0];
+        self.active = true;
+    }
+
+    fn copyFrom(self: *RuntimeLevel, src: *const Levels.Level) void {
+        self.level.office_w = src.office_w;
+        self.level.office_h = src.office_h;
+        self.level.collision_w = src.collision_w;
+        self.level.collision_h = src.collision_h;
+        self.level.collision_tile = src.collision_tile;
+        @memcpy(self.office_buf[0..src.office.len], src.office);
+        @memcpy(self.collision_buf[0..src.collision.len], src.collision);
+        self.entity_count = @min(src.entities.len, MAX_ENTITIES);
+        @memcpy(self.entity_buf[0..self.entity_count], src.entities[0..self.entity_count]);
+        self.refreshSlices();
+        self.active = true;
+    }
+
+    fn refreshSlices(self: *RuntimeLevel) void {
+        self.level.office = self.office_buf[0 .. self.level.office_w * self.level.office_h];
+        self.level.collision = self.collision_buf[0 .. self.level.collision_w * self.level.collision_h];
+        self.level.entities = self.entity_buf[0..self.entity_count];
+    }
+};
+
+const Editor = struct {
+    level: RuntimeLevel = .{},
+    mode: EditorMode = .tiles,
+    size: EditorSize = .small,
+    selected_tile: u16 = 1,
+    selected_entity: usize = 0,
+    tile_page: usize = 0,
+    entity_page: usize = 0,
+    camera_x: i32 = 0,
+    camera_y: i32 = 0,
+    msg_timer: i32 = 0,
+    msg: []const u8 = "",
 };
 
 const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1, hand };
@@ -214,9 +290,13 @@ const Game = struct {
     progress_buf: [16]u8 = undefined,
     godmode: bool = false,
     cheat_keys: [256]bool = [_]bool{false} ** 256,
+    overrides: [EDITOR_SLOTS]RuntimeLevel = [_]RuntimeLevel{.{}} ** EDITOR_SLOTS,
+    editor: Editor = .{},
 
     fn init(assets: *Assets) Game {
         var g = Game{ .assets = assets, .fui = Fui.init(CONF.SCREEN_W, CONF.SCREEN_H), .rng = std.Random.DefaultPrng.init(0x0ff1ce) };
+        g.loadSavedOverrides();
+        g.editor.level.copyFrom(Levels.playable[0]);
         g.loadLevel(&Levels.menu);
         return g;
     }
@@ -242,12 +322,26 @@ const Game = struct {
         self.score = 0;
         self.level_time_left = LEVEL_TIME_LIMIT;
         self.buttons_timer = 35;
-        self.current_level = @min(self.current_level, Levels.playable.len - 1);
-        self.loadLevel(Levels.playable[self.current_level]);
+        self.current_level = @min(self.current_level, self.playableCount() - 1);
+        self.loadLevel(self.playableLevel(self.current_level));
+    }
+
+    fn playableLevel(self: *Game, idx: usize) *const Levels.Level {
+        if (idx < self.overrides.len and self.overrides[idx].active) return &self.overrides[idx].level;
+        return Levels.playable[@min(idx, Levels.playable.len - 1)];
+    }
+
+    fn playableCount(self: *Game) usize {
+        var count = Levels.playable.len;
+        var i: usize = Levels.playable.len;
+        while (i < self.overrides.len) : (i += 1) {
+            if (self.overrides[i].active) count = i + 1;
+        }
+        return count;
     }
 
     fn startDebugLevel(self: *Game, level_idx: usize) void {
-        if (level_idx >= Levels.playable.len) return;
+        if (level_idx >= self.playableCount()) return;
         self.current_level = level_idx;
         self.total_score = 0;
         self.startGame();
@@ -257,9 +351,16 @@ const Game = struct {
         const ctrl_down = (f.mod & MOD_CTRL) != 0;
         if (!ctrl_down) {
             self.updateCheatKey(f, 'G');
+            self.updateCheatKey(f, 'E');
             self.updateCheatKey(f, '1');
             self.updateCheatKey(f, '2');
             self.updateCheatKey(f, '3');
+            self.updateCheatKey(f, '4');
+            self.updateCheatKey(f, '5');
+            self.updateCheatKey(f, '6');
+            self.updateCheatKey(f, '7');
+            self.updateCheatKey(f, '8');
+            self.updateCheatKey(f, '9');
             return;
         }
 
@@ -267,9 +368,25 @@ const Game = struct {
             self.godmode = !self.godmode;
             if (self.godmode) self.restorePlayerHealth();
         }
+        if (self.cheatJustPressed(f, 'E')) self.toggleEditor();
         if (self.cheatJustPressed(f, '1')) self.startDebugLevel(0);
         if (self.cheatJustPressed(f, '2')) self.startDebugLevel(1);
         if (self.cheatJustPressed(f, '3')) self.startDebugLevel(2);
+        if (self.cheatJustPressed(f, '4')) self.startDebugLevel(3);
+        if (self.cheatJustPressed(f, '5')) self.startDebugLevel(4);
+        if (self.cheatJustPressed(f, '6')) self.startDebugLevel(5);
+        if (self.cheatJustPressed(f, '7')) self.startDebugLevel(6);
+        if (self.cheatJustPressed(f, '8')) self.startDebugLevel(7);
+        if (self.cheatJustPressed(f, '9')) self.startDebugLevel(8);
+    }
+
+    fn toggleEditor(self: *Game) void {
+        if (self.state == .editor) {
+            self.toMenu();
+        } else {
+            self.state = .editor;
+            if (!self.editor.level.active) self.editor.level.copyFrom(self.playableLevel(self.current_level));
+        }
     }
 
     fn updateCheatKey(self: *Game, f: *const c.fenster, key: usize) void {
@@ -315,6 +432,7 @@ const Game = struct {
                 if (self.buttons_timer > 0) self.buttons_timer -= 1;
             },
             .end => {},
+            .editor => self.updateEditor(mouse),
         }
     }
 
@@ -505,7 +623,7 @@ const Game = struct {
         self.total_score += self.show_score;
         self.current_level += 1;
         self.buttons_timer = 35;
-        self.state = if (self.current_level >= Levels.playable.len) .end else .level_clear;
+        self.state = if (self.current_level >= self.playableCount()) .end else .level_clear;
     }
 
     fn gameOver(self: *Game, player_idx: usize) void {
@@ -559,6 +677,7 @@ const Game = struct {
                 self.fui.draw_text(renderer, "Idea, code, pixel art", cx - @divFloor(self.fui.text_length("Idea, code, pixel art", 1), 2), cy + 18, 1, 0xF8F8F8);
                 self.fui.draw_text(renderer, "Krzysztof Jankowski", cx - @divFloor(self.fui.text_length("Krzysztof Jankowski", 1), 2), cy + 28, 1, 0xF8F8F8);
             },
+            .editor => self.drawEditor(renderer, mouse),
         }
         self.drawCursor(renderer, mouse);
     }
@@ -735,6 +854,291 @@ const Game = struct {
         if (@abs(e.vx) <= 1 and @abs(e.vy) <= 1) return;
         e.dir = dominantDir(e.vx, e.vy);
     }
+
+    fn updateEditor(self: *Game, mouse: Mouse) void {
+        if (self.editor.msg_timer > 0) self.editor.msg_timer -= 1;
+        if (mouse.x >= EDITOR_PANEL_X) return;
+        if (mouse.left_down or mouse.right_down) {
+            const wx = mouse.x + self.editor.camera_x;
+            const wy = mouse.y + self.editor.camera_y;
+            switch (self.editor.mode) {
+                .tiles => self.paintEditorTile(wx, wy, if (mouse.right_down) 0 else self.editor.selected_tile),
+                .collision => self.paintEditorCollision(wx, wy, if (mouse.right_down) 0 else 1),
+                .entities => if (mouse.just_pressed) self.paintEditorEntity(wx, wy, mouse.right_down),
+            }
+        }
+    }
+
+    fn paintEditorTile(self: *Game, wx: i32, wy: i32, value: u16) void {
+        if (wx < 0 or wy < 0) return;
+        const tx: usize = @intCast(@divFloor(wx, 16));
+        const ty: usize = @intCast(@divFloor(wy, 16));
+        if (tx >= self.editor.level.level.office_w or ty >= self.editor.level.level.office_h) return;
+        self.editor.level.office_buf[ty * self.editor.level.level.office_w + tx] = value;
+    }
+
+    fn paintEditorCollision(self: *Game, wx: i32, wy: i32, value: u8) void {
+        if (wx < 0 or wy < 0) return;
+        const tile = self.editor.level.level.collision_tile;
+        const tx: usize = @intCast(@divFloor(wx, tile));
+        const ty: usize = @intCast(@divFloor(wy, tile));
+        if (tx >= self.editor.level.level.collision_w or ty >= self.editor.level.level.collision_h) return;
+        self.editor.level.collision_buf[ty * self.editor.level.level.collision_w + tx] = value;
+    }
+
+    fn paintEditorEntity(self: *Game, wx: i32, wy: i32, erase: bool) void {
+        if (erase) {
+            var i: usize = 0;
+            while (i < self.editor.level.entity_count) : (i += 1) {
+                const def = self.editor.level.entity_buf[i];
+                const r = Rect{ .x = def.x - 4, .y = def.y - 4, .w = 24, .h = 24 };
+                if (wx >= r.x and wx < r.x + r.w and wy >= r.y and wy < r.y + r.h) {
+                    var j = i;
+                    while (j + 1 < self.editor.level.entity_count) : (j += 1) self.editor.level.entity_buf[j] = self.editor.level.entity_buf[j + 1];
+                    self.editor.level.entity_count -= 1;
+                    self.editor.level.refreshSlices();
+                    return;
+                }
+            }
+            return;
+        }
+        if (self.editor.level.entity_count >= MAX_ENTITIES) return;
+        const kind = EditorEntityKinds[self.editor.selected_entity];
+        self.editor.level.entity_buf[self.editor.level.entity_count] = .{ .kind = kind, .x = wx, .y = wy, .player = kind == .employee };
+        self.editor.level.entity_count += 1;
+        self.editor.level.refreshSlices();
+    }
+
+    fn drawEditor(self: *Game, renderer: *Render, mouse: Mouse) void {
+        renderer.draw_rect(0, 0, EDITOR_PANEL_X, CONF.SCREEN_H, 0x181818);
+        self.drawEditorMap(renderer);
+        self.drawEditorPanel(renderer, mouse);
+    }
+
+    fn drawEditorMap(self: *Game, renderer: *Render) void {
+        const level = &self.editor.level.level;
+        var ty: usize = 0;
+        while (ty < level.office_h) : (ty += 1) {
+            var tx: usize = 0;
+            while (tx < level.office_w) : (tx += 1) {
+                const tile = self.editor.level.office_buf[ty * level.office_w + tx];
+                const x = @as(i32, @intCast(tx * 16)) - self.editor.camera_x;
+                const y = @as(i32, @intCast(ty * 16)) - self.editor.camera_y;
+                if (tile > 0) self.assets.office.draw_frame(renderer, tile - 1, x, y);
+                renderer.draw_rect_lines(x, y, 16, 16, 0x303030);
+            }
+        }
+        var cy: usize = 0;
+        while (cy < level.collision_h) : (cy += 1) {
+            var cx: usize = 0;
+            while (cx < level.collision_w) : (cx += 1) {
+                if (self.editor.level.collision_buf[cy * level.collision_w + cx] != 0) {
+                    renderer.draw_rect_trans(@as(i32, @intCast(cx)) * level.collision_tile - self.editor.camera_x, @as(i32, @intCast(cy)) * level.collision_tile - self.editor.camera_y, level.collision_tile, level.collision_tile, 0x882222);
+                }
+            }
+        }
+        for (self.editor.level.entity_buf[0..self.editor.level.entity_count]) |def| {
+            const inf = info(def.kind);
+            self.assets.sheet(inf.sheet).draw_frame(renderer, 0, def.x - inf.off_x - self.editor.camera_x, def.y - inf.off_y - self.editor.camera_y);
+        }
+    }
+
+    fn drawEditorPanel(self: *Game, renderer: *Render, mouse: Mouse) void {
+        renderer.draw_rect(EDITOR_PANEL_X, 0, EDITOR_PANEL_W, CONF.SCREEN_H, 0x101020);
+        self.fui.draw_text(renderer, "EDITOR", EDITOR_PANEL_X + 4, 4, 1, 0xF8F8F8);
+        var y: i32 = 16;
+        if (self.textButton(renderer, mouse, "TILES", EDITOR_PANEL_X + 4, y, 34, 10)) self.editor.mode = .tiles;
+        if (self.textButton(renderer, mouse, "COL", EDITOR_PANEL_X + 42, y, 28, 10)) self.editor.mode = .collision;
+        y += 12;
+        if (self.textButton(renderer, mouse, "ENTS", EDITOR_PANEL_X + 4, y, 34, 10)) self.editor.mode = .entities;
+        if (self.textButton(renderer, mouse, "PLAY", EDITOR_PANEL_X + 42, y, 30, 10)) self.playEditorLevel();
+        y += 14;
+        if (self.textButton(renderer, mouse, "NEW S", EDITOR_PANEL_X + 4, y, 34, 10)) self.newEditorLevel(.small);
+        if (self.textButton(renderer, mouse, "M", EDITOR_PANEL_X + 42, y, 12, 10)) self.newEditorLevel(.medium);
+        if (self.textButton(renderer, mouse, "B", EDITOR_PANEL_X + 58, y, 12, 10)) self.newEditorLevel(.big);
+        y += 14;
+        if (self.textButton(renderer, mouse, "<", EDITOR_PANEL_X + 4, y, 14, 10)) self.scrollEditor(-16, 0);
+        if (self.textButton(renderer, mouse, ">", EDITOR_PANEL_X + 22, y, 14, 10)) self.scrollEditor(16, 0);
+        if (self.textButton(renderer, mouse, "^", EDITOR_PANEL_X + 40, y, 14, 10)) self.scrollEditor(0, -16);
+        if (self.textButton(renderer, mouse, "v", EDITOR_PANEL_X + 58, y, 14, 10)) self.scrollEditor(0, 16);
+        y += 14;
+
+        self.fui.draw_text(renderer, "S", EDITOR_PANEL_X + 4, y + 1, 1, 0xF8F8F8);
+        var slot: usize = 0;
+        while (slot < EDITOR_SLOTS) : (slot += 1) {
+            const label = std.fmt.bufPrint(&self.progress_buf, "{d}", .{slot + 1}) catch "?";
+            if (self.textButton(renderer, mouse, label, EDITOR_PANEL_X + 12 + @as(i32, @intCast(slot)) * 7, y, 7, 9)) self.saveEditorSlot(slot) catch self.editorMessage("SAVE ERR");
+        }
+        y += 10;
+        self.fui.draw_text(renderer, "L", EDITOR_PANEL_X + 4, y + 1, 1, 0xF8F8F8);
+        slot = 0;
+        while (slot < EDITOR_SLOTS) : (slot += 1) {
+            const label = std.fmt.bufPrint(&self.progress_buf, "{d}", .{slot + 1}) catch "?";
+            if (self.textButton(renderer, mouse, label, EDITOR_PANEL_X + 12 + @as(i32, @intCast(slot)) * 7, y, 7, 9)) self.loadEditorSlot(slot) catch self.editorMessage("LOAD ERR");
+        }
+        y += 12;
+
+        switch (self.editor.mode) {
+            .tiles => y = self.drawTilePalette(renderer, mouse, y),
+            .collision => {
+                self.fui.draw_text(renderer, "LEFT: SOLID", EDITOR_PANEL_X + 4, y, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, "RIGHT: ERASE", EDITOR_PANEL_X + 4, y + 10, 1, 0xF8F8F8);
+                y += 24;
+            },
+            .entities => y = self.drawEntityPalette(renderer, mouse, y),
+        }
+
+        if (self.editor.msg_timer > 0) self.fui.draw_text(renderer, self.editor.msg, EDITOR_PANEL_X + 4, CONF.SCREEN_H - 10, 1, 0xF8F8F8);
+    }
+
+    fn drawTilePalette(self: *Game, renderer: *Render, mouse: Mouse, start_y: i32) i32 {
+        var y = start_y;
+        if (self.textButton(renderer, mouse, "<", EDITOR_PANEL_X + 4, y, 14, 10) and self.editor.tile_page > 0) self.editor.tile_page -= 1;
+        if (self.textButton(renderer, mouse, ">", EDITOR_PANEL_X + 22, y, 14, 10)) self.editor.tile_page += 1;
+        const selected = std.fmt.bufPrint(&self.score_buf, "TILE {d}", .{self.editor.selected_tile}) catch "TILE ?";
+        self.fui.draw_text(renderer, selected, EDITOR_PANEL_X + 40, y + 1, 1, 0xF8F8F8);
+        y += 12;
+        const per_page: usize = 4;
+        const first = self.editor.tile_page * per_page;
+        var i: usize = 0;
+        while (i < per_page and first + i < self.assets.office.frame_count()) : (i += 1) {
+            const bx = EDITOR_PANEL_X + 4 + @as(i32, @intCast(i % 4)) * 18;
+            const by = y + @as(i32, @intCast(i / 4)) * 18;
+            self.assets.office.draw_frame(renderer, first + i, bx, by);
+            renderer.draw_rect_lines(bx, by, 16, 16, if (self.editor.selected_tile == first + i + 1) 0xFFFF00 else 0x606060);
+            if (mouse.just_pressed and hit(mouse, .{ .x = bx, .y = by, .w = 16, .h = 16 })) self.editor.selected_tile = @intCast(first + i + 1);
+        }
+        return y + 22;
+    }
+
+    fn drawEntityPalette(self: *Game, renderer: *Render, mouse: Mouse, start_y: i32) i32 {
+        var y = start_y;
+        if (self.textButton(renderer, mouse, "<", EDITOR_PANEL_X + 4, y, 14, 10) and self.editor.entity_page > 0) self.editor.entity_page -= 1;
+        if (self.textButton(renderer, mouse, ">", EDITOR_PANEL_X + 22, y, 14, 10)) self.editor.entity_page += 1;
+        y += 12;
+        const per_page: usize = 3;
+        const first = self.editor.entity_page * per_page;
+        var i: usize = 0;
+        while (i < per_page and first + i < EditorEntityKinds.len) : (i += 1) {
+            const kind = EditorEntityKinds[first + i];
+            const by = y + @as(i32, @intCast(i)) * 10;
+            if (self.textButton(renderer, mouse, entityName(kind), EDITOR_PANEL_X + 4, by, 68, 9)) self.editor.selected_entity = first + i;
+            if (self.editor.selected_entity == first + i) renderer.draw_rect_lines(EDITOR_PANEL_X + 2, by - 1, 72, 11, 0xFFFF00);
+        }
+        return y + 34;
+    }
+
+    fn textButton(self: *Game, renderer: *Render, mouse: Mouse, label: []const u8, x: i32, y: i32, w: i32, h: i32) bool {
+        const hover = hit(mouse, .{ .x = x, .y = y, .w = w, .h = h });
+        renderer.draw_rect(x, y, w, h, if (hover) 0x404060 else 0x282840);
+        renderer.draw_rect_lines(x, y, w, h, 0x707090);
+        self.fui.draw_text(renderer, label, x + 2, y + 1, 1, 0xF8F8F8);
+        return hover and mouse.just_pressed;
+    }
+
+    fn newEditorLevel(self: *Game, size: EditorSize) void {
+        self.editor.size = size;
+        self.editor.level.setSize(size);
+        self.editor.camera_x = 0;
+        self.editor.camera_y = 0;
+        self.editorMessage("NEW LEVEL");
+    }
+
+    fn scrollEditor(self: *Game, dx: i32, dy: i32) void {
+        const max_x = @max(0, @as(i32, @intCast(self.editor.level.level.office_w * 16)) - EDITOR_PANEL_X);
+        const max_y = @max(0, @as(i32, @intCast(self.editor.level.level.office_h * 16)) - CONF.SCREEN_H);
+        self.editor.camera_x = @min(@max(0, self.editor.camera_x + dx), max_x);
+        self.editor.camera_y = @min(@max(0, self.editor.camera_y + dy), max_y);
+    }
+
+    fn playEditorLevel(self: *Game) void {
+        self.editor.level.refreshSlices();
+        self.level = &self.editor.level.level;
+        self.loadLevel(&self.editor.level.level);
+        self.state = .game;
+        self.score = 0;
+        self.level_time_left = LEVEL_TIME_LIMIT;
+    }
+
+    fn editorMessage(self: *Game, msg: []const u8) void {
+        self.editor.msg = msg;
+        self.editor.msg_timer = 90;
+    }
+
+    fn slotPath(slot: usize, buf: []u8) ![:0]const u8 {
+        return std.fmt.bufPrintZ(buf, "levels/level{d}.txt", .{slot + 1});
+    }
+
+    fn saveEditorSlot(self: *Game, slot: usize) !void {
+        _ = c.mkdir("levels", 0o755);
+        self.editor.level.refreshSlices();
+        self.overrides[slot].copyFrom(&self.editor.level.level);
+        var path_buf: [64]u8 = undefined;
+        const path = try slotPath(slot, &path_buf);
+        const file = c.fopen(path.ptr, "wb") orelse return error.SaveFailed;
+        defer _ = c.fclose(file);
+        var out_buf: [32768]u8 = undefined;
+        var out = std.ArrayListUnmanaged(u8).initBuffer(&out_buf);
+        const level = &self.editor.level.level;
+        try out.printBounded("office {d} {d}\n", .{ level.office_w, level.office_h });
+        for (level.office, 0..) |tile, i| try out.printBounded("{d}{s}", .{ tile, if ((i + 1) % level.office_w == 0) "\n" else " " });
+        try out.printBounded("collision {d} {d} {d}\n", .{ level.collision_w, level.collision_h, level.collision_tile });
+        for (level.collision, 0..) |tile, i| try out.printBounded("{d}{s}", .{ tile, if ((i + 1) % level.collision_w == 0) "\n" else " " });
+        try out.printBounded("entities {d}\n", .{level.entities.len});
+        for (level.entities) |def| try out.printBounded("{s} {d} {d} {d}\n", .{ entityName(def.kind), def.x, def.y, if (def.player) @as(u8, 1) else @as(u8, 0) });
+        if (c.fwrite(out.items.ptr, 1, out.items.len, file) != out.items.len) return error.SaveFailed;
+        self.editorMessage("SAVED");
+    }
+
+    fn loadEditorSlot(self: *Game, slot: usize) !void {
+        try self.loadRuntimeLevel(slot, &self.editor.level);
+        self.overrides[slot].copyFrom(&self.editor.level.level);
+        self.editorMessage("LOADED");
+    }
+
+    fn loadSavedOverrides(self: *Game) void {
+        var slot: usize = 0;
+        while (slot < EDITOR_SLOTS) : (slot += 1) self.loadRuntimeLevel(slot, &self.overrides[slot]) catch {};
+    }
+
+    fn loadRuntimeLevel(self: *Game, slot: usize, out: *RuntimeLevel) !void {
+        _ = self;
+        var path_buf: [64]u8 = undefined;
+        const path = try slotPath(slot, &path_buf);
+        const file = c.fopen(path.ptr, "rb") orelse return error.FileNotFound;
+        defer _ = c.fclose(file);
+        var read_buf: [32768]u8 = undefined;
+        const len = c.fread(&read_buf, 1, read_buf.len, file);
+        var it = std.mem.tokenizeAny(u8, read_buf[0..len], " \n\r\t");
+        if (!std.mem.eql(u8, it.next() orelse return error.InvalidLevel, "office")) return error.InvalidLevel;
+        out.level.office_w = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidLevel, 10);
+        out.level.office_h = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidLevel, 10);
+        const office_len = out.level.office_w * out.level.office_h;
+        if (office_len > EDITOR_MAX_OFFICE) return error.InvalidLevel;
+        var i: usize = 0;
+        while (i < office_len) : (i += 1) out.office_buf[i] = try std.fmt.parseInt(u16, it.next() orelse return error.InvalidLevel, 10);
+        if (!std.mem.eql(u8, it.next() orelse return error.InvalidLevel, "collision")) return error.InvalidLevel;
+        out.level.collision_w = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidLevel, 10);
+        out.level.collision_h = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidLevel, 10);
+        out.level.collision_tile = try std.fmt.parseInt(i32, it.next() orelse return error.InvalidLevel, 10);
+        const collision_len = out.level.collision_w * out.level.collision_h;
+        if (collision_len > EDITOR_MAX_COLLISION) return error.InvalidLevel;
+        i = 0;
+        while (i < collision_len) : (i += 1) out.collision_buf[i] = try std.fmt.parseInt(u8, it.next() orelse return error.InvalidLevel, 10);
+        if (!std.mem.eql(u8, it.next() orelse return error.InvalidLevel, "entities")) return error.InvalidLevel;
+        out.entity_count = try std.fmt.parseInt(usize, it.next() orelse return error.InvalidLevel, 10);
+        if (out.entity_count > MAX_ENTITIES) return error.InvalidLevel;
+        i = 0;
+        while (i < out.entity_count) : (i += 1) {
+            const kind = entityKindFromName(it.next() orelse return error.InvalidLevel) orelse return error.InvalidLevel;
+            const x = try std.fmt.parseInt(i32, it.next() orelse return error.InvalidLevel, 10);
+            const y = try std.fmt.parseInt(i32, it.next() orelse return error.InvalidLevel, 10);
+            const player = (try std.fmt.parseInt(u8, it.next() orelse return error.InvalidLevel, 10)) != 0;
+            out.entity_buf[i] = .{ .kind = kind, .x = x, .y = y, .player = player };
+        }
+        out.refreshSlices();
+        out.active = true;
+    }
 };
 
 fn activationFor(kind: Levels.EntityKind) ?Activation {
@@ -745,6 +1149,33 @@ fn activationFor(kind: Levels.EntityKind) ?Activation {
         .kitchen_sink => .{ .score = SCORE_USE, .timer = 30 },
         else => null,
     };
+}
+
+fn entityName(kind: Levels.EntityKind) []const u8 {
+    return switch (kind) {
+        .bookstand => "bookstand",
+        .chair => "chair",
+        .desk => "desk",
+        .door => "door",
+        .door_vertical => "door_vertical",
+        .elevator => "elevator",
+        .employee => "employee",
+        .fridge => "fridge",
+        .kitchen_cabinet => "kitchen_cabinet",
+        .kitchen_coffee => "kitchen_coffee",
+        .kitchen_sink => "kitchen_sink",
+        .lack => "lack",
+        .npc_employee => "npc_employee",
+        .plant => "plant",
+        .water => "water",
+    };
+}
+
+fn entityKindFromName(name: []const u8) ?Levels.EntityKind {
+    inline for (std.meta.fields(Levels.EntityKind)) |field| {
+        if (std.mem.eql(u8, name, field.name)) return @enumFromInt(field.value);
+    }
+    return null;
 }
 
 fn info(kind: Levels.EntityKind) EntityInfo {
