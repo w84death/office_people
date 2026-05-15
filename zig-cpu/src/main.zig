@@ -18,6 +18,7 @@ const PLAYER_SPEED: f32 = 30.0;
 const SCORE_THROW = 500;
 const SCORE_TRIGGER = 100;
 const SCORE_USE = 50;
+const LEVEL_TIME_LIMIT = 60.0;
 
 const GameState = enum { intro, menu, game, level_clear, game_over, end };
 const Direction = enum { up, right, down, left };
@@ -67,7 +68,7 @@ const EntityInfo = struct {
     trigger: bool = false,
 };
 
-const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, overlay, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1, hand };
+const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1, hand };
 
 const Assets = struct {
     allocator: std.mem.Allocator,
@@ -84,7 +85,6 @@ const Assets = struct {
     kitchen: *SpriteSheet,
     door: *SpriteSheet,
     elevator: *SpriteSheet,
-    overlay: *SpriteSheet,
     logo: *SpriteSheet,
     sponsor: *SpriteSheet,
     hearts: *SpriteSheet,
@@ -117,7 +117,6 @@ const Assets = struct {
             .kitchen = try load(allocator, "kitchen", @embedFile("sprites/office_people/kitchen.bmp"), 16, 16),
             .door = try load(allocator, "door", @embedFile("sprites/office_people/door.bmp"), 16, 24),
             .elevator = try load(allocator, "elevator", @embedFile("sprites/office_people/elevator.bmp"), 16, 16),
-            .overlay = try load(allocator, "overlay", @embedFile("sprites/office_people/overlay.bmp"), 120, 80),
             .logo = try load(allocator, "logo", @embedFile("sprites/office_people/office_people_logo.bmp"), 75, 36),
             .sponsor = try load(allocator, "sponsor", @embedFile("sprites/office_people/p1x_logo.bmp"), 22, 18),
             .hearts = try load(allocator, "hearts", @embedFile("sprites/office_people/hearth.bmp"), 9, 9),
@@ -155,7 +154,6 @@ const Assets = struct {
             .kitchen => self.kitchen,
             .door => self.door,
             .elevator => self.elevator,
-            .overlay => self.overlay,
             .logo => self.logo,
             .sponsor => self.sponsor,
             .hearts => self.hearts,
@@ -202,7 +200,7 @@ const Game = struct {
     score: i32 = 0,
     total_score: i32 = 0,
     show_score: i32 = 0,
-    level_time: f32 = 0.1,
+    level_time_left: f32 = LEVEL_TIME_LIMIT,
     level_clear: bool = false,
     rng: std.Random.DefaultPrng,
     cursor_t: f32 = 0,
@@ -234,7 +232,7 @@ const Game = struct {
     fn startGame(self: *Game) void {
         self.state = .game;
         self.score = 0;
-        self.level_time = 0.1;
+        self.level_time_left = LEVEL_TIME_LIMIT;
         self.buttons_timer = 35;
         self.current_level = @min(self.current_level, Levels.playable.len - 1);
         self.loadLevel(Levels.playable[self.current_level]);
@@ -256,17 +254,11 @@ const Game = struct {
                 self.updateEntities(mouse, dt, false);
             },
             .game => {
-                self.level_time += dt;
+                self.level_time_left = @max(0, self.level_time_left - dt);
                 self.updateEntities(mouse, dt, true);
                 self.updateCamera();
                 if (self.player_idx) |pi| {
-                    if (self.entities[pi].health <= 0) {
-                        self.dropHeld(pi);
-                        self.entities[pi].active = false;
-                        self.state = .game_over;
-                        self.total_score = self.scoreForTime();
-                        self.current_level = 0;
-                    }
+                    if (self.entities[pi].health <= 0 or self.level_time_left <= 0) self.gameOver(pi);
                 }
                 if (self.deskDoneCount() == self.deskTotalCount() and self.deskTotalCount() > 0) self.level_clear = true;
             },
@@ -477,51 +469,63 @@ const Game = struct {
     }
 
     fn finishLevel(self: *Game) void {
-        self.show_score = self.scoreForTime();
+        self.show_score = self.finalLevelScore();
         self.total_score += self.show_score;
         self.current_level += 1;
         self.buttons_timer = 35;
         self.state = if (self.current_level >= Levels.playable.len) .end else .level_clear;
     }
 
+    fn gameOver(self: *Game, player_idx: usize) void {
+        self.dropHeld(player_idx);
+        self.entities[player_idx].active = false;
+        self.state = .game_over;
+        self.show_score = self.finalLevelScore();
+        self.total_score = self.show_score;
+        self.current_level = 0;
+        self.buttons_timer = 35;
+    }
+
     fn draw(self: *Game, renderer: *Render, mouse: Mouse) void {
         renderer.clear_background(0x000000);
+        const cx = @divFloor(CONF.SCREEN_W, 2);
+        const cy = @divFloor(CONF.SCREEN_H, 2);
         switch (self.state) {
-            .intro => self.assets.sponsor.draw_frame(renderer, 0, 49, 31),
+            .intro => self.assets.sponsor.draw_frame(renderer, 0, cx - 11, cy - 9),
             .menu => {
                 self.drawWorld(renderer);
-                self.assets.overlay.draw_frame(renderer, 0, 0, 0);
-                self.assets.logo.draw_frame(renderer, 0, 22, 20);
-                _ = self.imageButton(renderer, mouse, 30, 60, .play0, .play1);
-                if (mouse.just_pressed and hit(mouse, .{ .x = 30, .y = 60, .w = 60, .h = 16 })) self.startGame();
-                self.fui.draw_text(renderer, CONF.VERSION, 92, 72, 1, 0xF8F8F8);
+                self.assets.logo.draw_frame(renderer, 0, cx - 37, 20);
+                const play_x = cx - 30;
+                const play_y = CONF.SCREEN_H - 36;
+                _ = self.imageButton(renderer, mouse, play_x, play_y, .play0, .play1);
+                if (mouse.just_pressed and hit(mouse, .{ .x = play_x, .y = play_y, .w = 60, .h = 16 })) self.startGame();
+                self.fui.draw_text(renderer, CONF.VERSION, cx - @divFloor(self.fui.text_length(CONF.VERSION, 1), 2), CONF.SCREEN_H - 10, 1, 0xF8F8F8);
             },
             .game => {
                 self.drawWorld(renderer);
-                self.assets.overlay.draw_frame(renderer, 0, 0, 0);
                 self.drawHud(renderer);
             },
             .game_over => {
-                self.assets.game_over.draw_frame(renderer, 0, 34, 8);
+                self.assets.game_over.draw_frame(renderer, 0, cx - 25, cy - 34);
                 const s = std.fmt.bufPrint(&self.score_buf, "YOU SCORE {d}", .{self.total_score}) catch "YOU SCORE ?";
-                self.fui.draw_text(renderer, s, 24, 48, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, s, cx - @divFloor(self.fui.text_length(s, 1), 2), cy + 8, 1, 0xF8F8F8);
                 if (self.buttons_timer <= 0) self.drawReplayBack(renderer, mouse);
             },
             .level_clear => {
-                self.assets.done.draw_frame(renderer, 0, 32, 30);
+                self.assets.done.draw_frame(renderer, 0, cx - 28, cy - 10);
                 const s = std.fmt.bufPrint(&self.score_buf, "YOU SCORE {d}", .{self.show_score}) catch "YOU SCORE ?";
-                self.fui.draw_text(renderer, s, 24, 48, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, s, cx - @divFloor(self.fui.text_length(s, 1), 2), cy + 8, 1, 0xF8F8F8);
                 if (self.buttons_timer <= 0) {
-                    if (self.imageButton(renderer, mouse, 28, 60, .back0, .back1)) self.toMenu();
-                    if (self.imageButton(renderer, mouse, 46, 60, .next0, .next1)) self.startGame();
+                    if (self.imageButton(renderer, mouse, cx - 32, CONF.SCREEN_H - 20, .back0, .back1)) self.toMenu();
+                    if (self.imageButton(renderer, mouse, cx - 14, CONF.SCREEN_H - 20, .next0, .next1)) self.startGame();
                 }
             },
             .end => {
-                self.assets.the_end.draw_frame(renderer, 0, 25, 30);
+                self.assets.the_end.draw_frame(renderer, 0, cx - 35, cy - 10);
                 const s = std.fmt.bufPrint(&self.score_buf, "YOU TOTAL SCORE {d}", .{self.total_score}) catch "YOU TOTAL SCORE ?";
-                self.fui.draw_text(renderer, s, 10, 48, 1, 0xF8F8F8);
-                self.fui.draw_text(renderer, "Idea, code, pixel art", 8, 58, 1, 0xF8F8F8);
-                self.fui.draw_text(renderer, "Krzysztof Jankowski", 10, 68, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, s, cx - @divFloor(self.fui.text_length(s, 1), 2), cy + 8, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, "Idea, code, pixel art", cx - @divFloor(self.fui.text_length("Idea, code, pixel art", 1), 2), cy + 18, 1, 0xF8F8F8);
+                self.fui.draw_text(renderer, "Krzysztof Jankowski", cx - @divFloor(self.fui.text_length("Krzysztof Jankowski", 1), 2), cy + 28, 1, 0xF8F8F8);
             },
         }
         self.drawCursor(renderer, mouse);
@@ -563,15 +567,16 @@ const Game = struct {
         while (i < 3) : (i += 1) self.assets.hearts.draw_frame(renderer, if (p_health > i) 0 else 1, CONF.SCREEN_W - 16 - 12 * i, 6);
         const progress = std.fmt.bufPrint(&self.progress_buf, "{d}/{d}", .{ done, total }) catch "?/?";
         self.fui.draw_text(renderer, progress, 8, 8, 1, 0xF8F8F8);
-        const score = std.fmt.bufPrint(&self.score_buf, "{d}", .{self.scoreForTime()}) catch "?";
-        self.fui.draw_text(renderer, score, 52, 8, 1, 0xF8F8F8);
-        if (done == 0) self.fui.draw_text(renderer, "Turn on all the computers.", 8, 68, 1, 0xF8F8F8);
-        if (done == total and total > 0) self.fui.draw_text(renderer, "Done! Go to elevator.", 8, 68, 1, 0xF8F8F8);
+        const timer = std.fmt.bufPrint(&self.score_buf, "{d}", .{@as(i32, @intFromFloat(@ceil(self.level_time_left)))}) catch "?";
+        self.fui.draw_text(renderer, timer, @divFloor(CONF.SCREEN_W - self.fui.text_length(timer, 1), 2), 8, 1, 0xF8F8F8);
+        if (done == 0) self.fui.draw_text(renderer, "Turn on all the computers.", 8, CONF.SCREEN_H - 12, 1, 0xF8F8F8);
+        if (done == total and total > 0) self.fui.draw_text(renderer, "Done! Go to elevator.", 8, CONF.SCREEN_H - 12, 1, 0xF8F8F8);
     }
 
     fn drawReplayBack(self: *Game, renderer: *Render, mouse: Mouse) void {
-        if (self.imageButton(renderer, mouse, 28, 60, .back0, .back1)) self.toMenu();
-        if (self.imageButton(renderer, mouse, 46, 60, .replay0, .replay1)) self.startGame();
+        const cx = @divFloor(CONF.SCREEN_W, 2);
+        if (self.imageButton(renderer, mouse, cx - 32, CONF.SCREEN_H - 20, .back0, .back1)) self.toMenu();
+        if (self.imageButton(renderer, mouse, cx - 14, CONF.SCREEN_H - 20, .replay0, .replay1)) self.startGame();
     }
 
     fn imageButton(self: *Game, renderer: *Render, mouse: Mouse, x: i32, y: i32, normal: SheetId, active: SheetId) bool {
@@ -677,8 +682,9 @@ const Game = struct {
         return done;
     }
 
-    fn scoreForTime(self: *Game) i32 {
-        return @intFromFloat(@as(f32, @floatFromInt(self.score)) / @max(0.1, self.level_time));
+    fn finalLevelScore(self: *Game) i32 {
+        const remaining: i32 = @intFromFloat(@ceil(@max(0, self.level_time_left)));
+        return self.score + remaining * 10;
     }
 
     fn actorSpeed(self: *Game, idx: usize) f32 {

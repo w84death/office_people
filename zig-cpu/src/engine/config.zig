@@ -8,10 +8,10 @@ pub const CONF = struct {
     pub const VERSION = "v0.7-zig";
     pub const THE_NAME = "Office People";
     pub const TAG_LINE = "Turn on all the computers.";
-    pub const SCREEN_W = 120;
-    pub const SCREEN_H = 80;
-    pub const PIXEL_SCALE = 8;
-    pub const TARGET_FPS = 30.0;
+    pub const SCREEN_W = 160;
+    pub const SCREEN_H = 144;
+    pub const PIXEL_SCALE = 4;
+    pub const TARGET_FPS = 60.0;
     pub const FONT_WIDTH = 8;
     pub const FONT_HEIGHT = 8;
 
