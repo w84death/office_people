@@ -5,12 +5,12 @@
 // *************************************
 
 pub const CONF = struct {
-    pub const VERSION = "1.0-RC19";
-    pub const THE_NAME = "Borowik";
-    pub const TAG_LINE = "Grow something awesome.";
-    pub const SCREEN_W = 800;
-    pub const SCREEN_H = 600;
-    pub const TARGET_FPS = 60.0;
+    pub const VERSION = "v0.7-zig";
+    pub const THE_NAME = "Office People";
+    pub const TAG_LINE = "Turn on all the computers.";
+    pub const SCREEN_W = 120;
+    pub const SCREEN_H = 80;
+    pub const TARGET_FPS = 30.0;
     pub const FONT_WIDTH = 8;
     pub const FONT_HEIGHT = 8;
 

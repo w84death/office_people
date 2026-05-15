@@ -4,12 +4,12 @@ const filename = "borowik";
 fn configureLinks(exe: *std.Build.Step.Compile, os_tag: std.Target.Os.Tag) void {
     switch (os_tag) {
         .windows => {
-            exe.linkSystemLibrary("gdi32");
-            exe.linkSystemLibrary("winmm");
+            exe.root_module.linkSystemLibrary("gdi32", .{});
+            exe.root_module.linkSystemLibrary("winmm", .{});
         },
         .linux => {
-            exe.linkSystemLibrary("X11");
-            exe.linkSystemLibrary("asound");
+            exe.root_module.linkSystemLibrary("X11", .{});
+            exe.root_module.linkSystemLibrary("asound", .{});
         },
         else => {},
     }
@@ -30,11 +30,11 @@ fn addAppExe(
         }),
     });
 
-    exe.addIncludePath(b.path("src/libs"));
-    exe.addCSourceFile(.{ .file = b.path("src/libs/fenster.c"), .flags = &[_][]const u8{} });
-    exe.addCSourceFile(.{ .file = b.path("src/libs/fenster_audio.c"), .flags = &[_][]const u8{} });
+    exe.root_module.addIncludePath(b.path("src/libs"));
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/libs/fenster.c"), .flags = &[_][]const u8{} });
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/libs/fenster_audio.c"), .flags = &[_][]const u8{} });
     configureLinks(exe, target.result.os.tag);
-    exe.linkLibC();
+    exe.root_module.linkSystemLibrary("c", .{});
 
     return exe;
 }

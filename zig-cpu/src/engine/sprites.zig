@@ -143,7 +143,7 @@ pub const SpriteSheet = struct {
         const row_span_offsets = try allocator.alloc(u32, row_count + 1);
         errdefer allocator.free(row_span_offsets);
 
-        var spans_builder = std.ArrayListUnmanaged(Span){};
+        var spans_builder = std.ArrayListUnmanaged(Span).empty;
         errdefer spans_builder.deinit(allocator);
 
         row_span_offsets[0] = 0;
