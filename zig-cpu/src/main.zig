@@ -68,6 +68,11 @@ const EntityInfo = struct {
     trigger: bool = false,
 };
 
+const Activation = struct {
+    score: i32,
+    timer: i32 = 0,
+};
+
 const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1, hand };
 
 const Assets = struct {
@@ -260,7 +265,8 @@ const Game = struct {
                 if (self.player_idx) |pi| {
                     if (self.entities[pi].health <= 0 or self.level_time_left <= 0) self.gameOver(pi);
                 }
-                if (self.deskDoneCount() == self.deskTotalCount() and self.deskTotalCount() > 0) self.level_clear = true;
+                const trigger_total = self.triggerTotalCount();
+                if (self.triggerDoneCount() == trigger_total and trigger_total > 0) self.level_clear = true;
             },
             .level_clear, .game_over => {
                 if (self.buttons_timer > 0) self.buttons_timer -= 1;
@@ -435,29 +441,12 @@ const Game = struct {
     }
 
     fn useEntity(self: *Game, actor: usize, target: usize) void {
-        _ = actor;
+        const activation = activationFor(self.entities[target].kind) orelse return;
         var e = &self.entities[target];
-        switch (e.kind) {
-            .desk => if (!e.state_on) {
-                e.state_on = true;
-                self.score += SCORE_TRIGGER;
-            },
-            .fridge => if (!e.state_on) {
-                e.state_on = true;
-                e.timer = 100;
-                self.score += SCORE_USE;
-            },
-            .kitchen_coffee => if (!e.state_on) {
-                e.state_on = true;
-                e.timer = 400;
-                self.score += SCORE_USE * 2;
-            },
-            .kitchen_sink => if (!e.state_on) {
-                e.state_on = true;
-                e.timer = 30;
-                self.score += SCORE_USE;
-            },
-            else => {},
+        if (!e.state_on) {
+            e.state_on = true;
+            e.timer = activation.timer;
+            if (self.entities[actor].player) self.score += activation.score;
         }
     }
 
@@ -560,8 +549,8 @@ const Game = struct {
     }
 
     fn drawHud(self: *Game, renderer: *Render) void {
-        const done = self.deskDoneCount();
-        const total = self.deskTotalCount();
+        const done = self.triggerDoneCount();
+        const total = self.triggerTotalCount();
         const p_health = if (self.player_idx) |pi| self.entities[pi].health else 0;
         var i: i32 = 0;
         while (i < 3) : (i += 1) self.assets.hearts.draw_frame(renderer, if (p_health > i) 0 else 1, CONF.SCREEN_W - 16 - 12 * i, 6);
@@ -638,7 +627,12 @@ const Game = struct {
         var e = &self.entities[idx];
         e.anim_t += dt;
         if (e.timer > 0) e.timer -= 1;
-        if (e.timer <= 0 and (e.kind == .fridge or e.kind == .kitchen_coffee or e.kind == .kitchen_sink)) e.state_on = false;
+        if (e.timer <= 0) {
+            if (activationFor(e.kind)) |activation| {
+                if (activation.timer > 0) e.state_on = false;
+            }
+        }
+        self.updateDirectionFromVelocity(idx);
     }
 
     fn rect(self: *Game, idx: usize) Rect {
@@ -666,18 +660,18 @@ const Game = struct {
         return .{ .x = -1000, .y = -1000, .w = 1, .h = 1 };
     }
 
-    fn deskTotalCount(self: *Game) i32 {
+    fn triggerTotalCount(self: *Game) i32 {
         var total: i32 = 0;
         for (self.entities[0..self.count]) |e| {
-            if (e.active and e.kind == .desk) total += 1;
+            if (e.active and info(e.kind).trigger) total += 1;
         }
         return total;
     }
 
-    fn deskDoneCount(self: *Game) i32 {
+    fn triggerDoneCount(self: *Game) i32 {
         var done: i32 = 0;
         for (self.entities[0..self.count]) |e| {
-            if (e.active and e.kind == .desk and e.state_on) done += 1;
+            if (e.active and info(e.kind).trigger and e.state_on) done += 1;
         }
         return done;
     }
@@ -691,7 +685,23 @@ const Game = struct {
         const held = self.entities[idx].held orelse return PLAYER_SPEED;
         return PLAYER_SPEED - info(self.entities[held].kind).slow_down;
     }
+
+    fn updateDirectionFromVelocity(self: *Game, idx: usize) void {
+        var e = &self.entities[idx];
+        if (@abs(e.vx) <= 1 and @abs(e.vy) <= 1) return;
+        e.dir = dominantDir(e.vx, e.vy);
+    }
 };
+
+fn activationFor(kind: Levels.EntityKind) ?Activation {
+    return switch (kind) {
+        .desk => .{ .score = SCORE_TRIGGER },
+        .fridge => .{ .score = SCORE_USE, .timer = 100 },
+        .kitchen_coffee => .{ .score = SCORE_USE * 2, .timer = 400 },
+        .kitchen_sink => .{ .score = SCORE_USE, .timer = 30 },
+        else => null,
+    };
+}
 
 fn info(kind: Levels.EntityKind) EntityInfo {
     return switch (kind) {
