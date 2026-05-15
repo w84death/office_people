@@ -19,6 +19,7 @@ const SCORE_THROW = 500;
 const SCORE_TRIGGER = 100;
 const SCORE_USE = 50;
 const LEVEL_TIME_LIMIT = 60.0;
+const MOD_CTRL = 1;
 
 const GameState = enum { intro, menu, game, level_clear, game_over, end };
 const Direction = enum { up, right, down, left };
@@ -211,6 +212,8 @@ const Game = struct {
     cursor_t: f32 = 0,
     score_buf: [32]u8 = undefined,
     progress_buf: [16]u8 = undefined,
+    godmode: bool = false,
+    cheat_keys: [256]bool = [_]bool{false} ** 256,
 
     fn init(assets: *Assets) Game {
         var g = Game{ .assets = assets, .fui = Fui.init(CONF.SCREEN_W, CONF.SCREEN_H), .rng = std.Random.DefaultPrng.init(0x0ff1ce) };
@@ -241,6 +244,46 @@ const Game = struct {
         self.buttons_timer = 35;
         self.current_level = @min(self.current_level, Levels.playable.len - 1);
         self.loadLevel(Levels.playable[self.current_level]);
+    }
+
+    fn startDebugLevel(self: *Game, level_idx: usize) void {
+        if (level_idx >= Levels.playable.len) return;
+        self.current_level = level_idx;
+        self.total_score = 0;
+        self.startGame();
+    }
+
+    fn handleCheats(self: *Game, f: *const c.fenster) void {
+        const ctrl_down = (f.mod & MOD_CTRL) != 0;
+        if (!ctrl_down) {
+            self.updateCheatKey(f, 'G');
+            self.updateCheatKey(f, '1');
+            self.updateCheatKey(f, '2');
+            self.updateCheatKey(f, '3');
+            return;
+        }
+
+        if (self.cheatJustPressed(f, 'G')) {
+            self.godmode = !self.godmode;
+            if (self.godmode) self.restorePlayerHealth();
+        }
+        if (self.cheatJustPressed(f, '1')) self.startDebugLevel(0);
+        if (self.cheatJustPressed(f, '2')) self.startDebugLevel(1);
+        if (self.cheatJustPressed(f, '3')) self.startDebugLevel(2);
+    }
+
+    fn updateCheatKey(self: *Game, f: *const c.fenster, key: usize) void {
+        self.cheat_keys[key] = f.keys[key] != 0;
+    }
+
+    fn cheatJustPressed(self: *Game, f: *const c.fenster, key: usize) bool {
+        const down = f.keys[key] != 0;
+        defer self.cheat_keys[key] = down;
+        return down and !self.cheat_keys[key];
+    }
+
+    fn restorePlayerHealth(self: *Game) void {
+        if (self.player_idx) |pi| self.entities[pi].health = @max(self.entities[pi].health, 3);
     }
 
     fn update(self: *Game, mouse: Mouse, dt: f32) void {
@@ -451,7 +494,7 @@ const Game = struct {
     }
 
     fn knock(self: *Game, idx: usize, power: f32, by_player: bool) void {
-        if (self.entities[idx].knocked <= 0 and self.entities[idx].player) self.entities[idx].health -= 1;
+        if (self.entities[idx].knocked <= 0 and self.entities[idx].player and !self.godmode) self.entities[idx].health -= 1;
         self.entities[idx].knocked = power * 0.1;
         if (self.entities[idx].held != null) self.dropHeld(idx);
         if (by_player and !self.entities[idx].player) self.score += SCORE_THROW;
@@ -558,6 +601,7 @@ const Game = struct {
         self.fui.draw_text(renderer, progress, 8, 8, 1, 0xF8F8F8);
         const timer = std.fmt.bufPrint(&self.score_buf, "{d}", .{@as(i32, @intFromFloat(@ceil(self.level_time_left)))}) catch "?";
         self.fui.draw_text(renderer, timer, @divFloor(CONF.SCREEN_W - self.fui.text_length(timer, 1), 2), 8, 1, 0xF8F8F8);
+        if (self.godmode) self.fui.draw_text(renderer, "GOD", CONF.SCREEN_W - 38, 18, 1, 0xF8F8F8);
         if (done == 0) self.fui.draw_text(renderer, "Turn on all the computers.", 8, CONF.SCREEN_H - 12, 1, 0xF8F8F8);
         if (done == total and total > 0) self.fui.draw_text(renderer, "Done! Go to elevator.", 8, CONF.SCREEN_H - 12, 1, 0xF8F8F8);
     }
@@ -811,6 +855,7 @@ pub fn main() !void {
     while (c.fenster_loop(&f) == 0) {
         renderer.begin_frame();
         const mouse = mouse_buttons.update(@divFloor(f.x, CONF.PIXEL_SCALE), @divFloor(f.y, CONF.PIXEL_SCALE), @intCast(f.mouse));
+        game.handleCheats(&f);
         if (esc_lock and f.keys[27] == 0) esc_lock = false else if (!esc_lock and f.keys[27] != 0) {
             esc_lock = true;
             if (game.state == .menu) break else game.toMenu();

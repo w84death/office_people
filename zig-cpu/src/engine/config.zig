@@ -5,7 +5,7 @@
 // *************************************
 
 pub const CONF = struct {
-    pub const VERSION = "v0.7-zig";
+    pub const VERSION = "ZIG-NATIVE";
     pub const THE_NAME = "Office People";
     pub const TAG_LINE = "Turn on all the computers.";
     pub const SCREEN_W = 256;
