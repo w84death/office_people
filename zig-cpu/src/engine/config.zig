@@ -10,6 +10,7 @@ pub const CONF = struct {
     pub const TAG_LINE = "Turn on all the computers.";
     pub const SCREEN_W = 120;
     pub const SCREEN_H = 80;
+    pub const PIXEL_SCALE = 8;
     pub const TARGET_FPS = 30.0;
     pub const FONT_WIDTH = 8;
     pub const FONT_HEIGHT = 8;

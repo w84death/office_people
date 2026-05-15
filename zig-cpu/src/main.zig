@@ -67,7 +67,7 @@ const EntityInfo = struct {
     trigger: bool = false,
 };
 
-const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, overlay, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1 };
+const SheetId = enum { office, employee, npc_employee, desk, chair, plant, water, lack, bookstand, fridge, kitchen, door, elevator, overlay, logo, sponsor, hearts, game_over, done, the_end, play0, play1, replay0, replay1, next0, next1, back0, back1, hand };
 
 const Assets = struct {
     allocator: std.mem.Allocator,
@@ -99,6 +99,7 @@ const Assets = struct {
     next1: *SpriteSheet,
     back0: *SpriteSheet,
     back1: *SpriteSheet,
+    hand: *SpriteSheet,
 
     fn init(allocator: std.mem.Allocator) !Assets {
         return .{
@@ -131,6 +132,7 @@ const Assets = struct {
             .next1 = try load(allocator, "next1", @embedFile("sprites/office_people/button_next_1.bmp"), 47, 16),
             .back0 = try load(allocator, "back0", @embedFile("sprites/office_people/button_back_0.bmp"), 16, 16),
             .back1 = try load(allocator, "back1", @embedFile("sprites/office_people/button_back_1.bmp"), 16, 16),
+            .hand = try load(allocator, "hand", @embedFile("sprites/hand.bmp"), 18, 28),
         };
     }
 
@@ -168,6 +170,7 @@ const Assets = struct {
             .next1 => self.next1,
             .back0 => self.back0,
             .back1 => self.back1,
+            .hand => self.hand,
         };
     }
 
@@ -202,6 +205,7 @@ const Game = struct {
     level_time: f32 = 0.1,
     level_clear: bool = false,
     rng: std.Random.DefaultPrng,
+    cursor_t: f32 = 0,
     score_buf: [32]u8 = undefined,
     progress_buf: [16]u8 = undefined,
 
@@ -237,6 +241,7 @@ const Game = struct {
     }
 
     fn update(self: *Game, mouse: Mouse, dt: f32) void {
+        self.cursor_t += dt;
         switch (self.state) {
             .intro => {
                 self.intro_timer -= 1;
@@ -519,6 +524,12 @@ const Game = struct {
                 self.fui.draw_text(renderer, "Krzysztof Jankowski", 10, 68, 1, 0xF8F8F8);
             },
         }
+        self.drawCursor(renderer, mouse);
+    }
+
+    fn drawCursor(self: *Game, renderer: *Render, mouse: Mouse) void {
+        const frame: usize = @intCast(@mod(@as(i32, @intFromFloat(self.cursor_t / 0.133)), 6));
+        self.assets.hand.draw_frame(renderer, frame, mouse.x - 2, mouse.y - 2);
     }
 
     fn drawWorld(self: *Game, renderer: *Render) void {
@@ -541,7 +552,7 @@ const Game = struct {
         const e = self.entities[idx];
         if (!e.active) return;
         const inf = info(e.kind);
-        self.assets.sheet(inf.sheet).draw_frame(renderer, self.frameFor(idx), @as(i32, @intFromFloat(e.x)) - cami(self.camera_x), @as(i32, @intFromFloat(e.y)) - cami(self.camera_y));
+        self.assets.sheet(inf.sheet).draw_frame(renderer, self.frameFor(idx), @as(i32, @intFromFloat(e.x)) - inf.off_x - cami(self.camera_x), @as(i32, @intFromFloat(e.y)) - inf.off_y - cami(self.camera_y));
     }
 
     fn drawHud(self: *Game, renderer: *Render) void {
@@ -628,7 +639,7 @@ const Game = struct {
     fn rect(self: *Game, idx: usize) Rect {
         const e = self.entities[idx];
         const inf = info(e.kind);
-        return .{ .x = @as(i32, @intFromFloat(e.x)) + inf.off_x, .y = @as(i32, @intFromFloat(e.y)) + inf.off_y, .w = inf.size_w, .h = inf.size_h };
+        return .{ .x = @as(i32, @intFromFloat(e.x)), .y = @as(i32, @intFromFloat(e.y)), .w = inf.size_w, .h = inf.size_h };
     }
 
     fn mapBlocked(self: *Game, idx: usize) bool {
@@ -761,17 +772,19 @@ fn hideSystemCursor(f: *c.fenster) void {
 
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
-    const total_pixels: usize = @intCast(CONF.SCREEN_W * CONF.SCREEN_H);
+    const window_w = CONF.SCREEN_W * CONF.PIXEL_SCALE;
+    const window_h = CONF.SCREEN_H * CONF.PIXEL_SCALE;
+    const total_pixels: usize = @intCast(window_w * window_h);
     const raw_buf = try allocator.alloc(u32, total_pixels);
     defer allocator.free(raw_buf);
     @memset(raw_buf, 0);
 
-    var f = std.mem.zeroInit(c.fenster, .{ .width = CONF.SCREEN_W, .height = CONF.SCREEN_H, .title = CONF.THE_NAME, .buf = raw_buf.ptr, .fullscreen = 0 });
+    var f = std.mem.zeroInit(c.fenster, .{ .width = window_w, .height = window_h, .title = CONF.THE_NAME, .buf = raw_buf.ptr, .fullscreen = 0 });
     _ = c.fenster_open(&f);
     defer c.fenster_close(&f);
     hideSystemCursor(&f);
 
-    var renderer = Render.init(raw_buf, CONF.SCREEN_W, CONF.SCREEN_H);
+    var renderer = Render.init_scaled(raw_buf, CONF.SCREEN_W, CONF.SCREEN_H, CONF.PIXEL_SCALE);
     defer renderer.deinit();
     var mouse_buttons = MouseButtons.init();
     var assets = try Assets.init(allocator);
@@ -781,7 +794,7 @@ pub fn main() !void {
     var esc_lock = false;
     while (c.fenster_loop(&f) == 0) {
         renderer.begin_frame();
-        const mouse = mouse_buttons.update(f.x, f.y, @intCast(f.mouse));
+        const mouse = mouse_buttons.update(@divFloor(f.x, CONF.PIXEL_SCALE), @divFloor(f.y, CONF.PIXEL_SCALE), @intCast(f.mouse));
         if (esc_lock and f.keys[27] == 0) esc_lock = false else if (!esc_lock and f.keys[27] != 0) {
             esc_lock = true;
             if (game.state == .menu) break else game.toMenu();

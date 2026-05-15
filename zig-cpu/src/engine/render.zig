@@ -40,8 +40,11 @@ pub const Render = struct {
     };
 
     window_buf: []u32,
+    window_width: i32,
+    window_height: i32,
     width: i32,
     height: i32,
+    pixel_scale: i32,
     pixels_count: usize,
     frame_buf: []u32,
     terrain_buf: []u32,
@@ -52,9 +55,14 @@ pub const Render = struct {
     perf: PerfStats = .{},
 
     pub fn init(buf: []u32, width: i32, height: i32) Render {
+        return init_scaled(buf, width, height, 1);
+    }
+
+    pub fn init_scaled(buf: []u32, width: i32, height: i32, scale: i32) Render {
         const allocator = std.heap.c_allocator;
         const w: i32 = if (width > 0) width else CONF.SCREEN_W;
         const h: i32 = if (height > 0) height else CONF.SCREEN_H;
+        const s: i32 = if (scale == 4 or scale == 8) scale else 1;
         const count: usize = @intCast(@as(i64, w) * @as(i64, h));
 
         const frame_buf = allocator.alloc(u32, count) catch @panic("failed to allocate frame buffer");
@@ -67,8 +75,11 @@ pub const Render = struct {
 
         return .{
             .window_buf = buf,
+            .window_width = w * s,
+            .window_height = h * s,
             .width = w,
             .height = h,
+            .pixel_scale = s,
             .pixels_count = count,
             .frame_buf = frame_buf,
             .terrain_buf = terrain_buf,
@@ -99,7 +110,31 @@ pub const Render = struct {
     }
 
     pub fn present(self: *Render) void {
-        @memcpy(self.window_buf, self.frame_buf);
+        if (self.pixel_scale == 1) {
+            @memcpy(self.window_buf, self.frame_buf);
+            return;
+        }
+
+        const scale: usize = @intCast(self.pixel_scale);
+        const logical_w: usize = @intCast(self.width);
+        const logical_h: usize = @intCast(self.height);
+        const window_w: usize = @intCast(self.window_width);
+
+        var y: usize = 0;
+        while (y < logical_h) : (y += 1) {
+            const src_row = y * logical_w;
+            const dst_row = y * scale * window_w;
+            var x: usize = 0;
+            while (x < logical_w) : (x += 1) {
+                const color = self.frame_buf[src_row + x];
+                const dst_x = x * scale;
+                var sy: usize = 0;
+                while (sy < scale) : (sy += 1) {
+                    const dst = dst_row + sy * window_w + dst_x;
+                    @memset(self.window_buf[dst .. dst + scale], color);
+                }
+            }
+        }
     }
 
     pub fn perf_begin_sim(self: *Render) void {
