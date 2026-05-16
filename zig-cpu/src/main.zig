@@ -453,8 +453,8 @@ const Game = struct {
         const pi = self.player_idx.?;
         var p = &self.entities[pi];
         if (p.knocked > 0) return;
-        const mx = @as(f32, @floatFromInt(mouse.x)) + self.camera_x;
-        const my = @as(f32, @floatFromInt(mouse.y)) + self.camera_y;
+        const mx = @as(f32, @floatFromInt(mouse.x - self.worldOffsetX())) + self.camera_x;
+        const my = @as(f32, @floatFromInt(mouse.y - self.worldOffsetY())) + self.camera_y;
         const dx = mx - p.x;
         const dy = my - p.y;
         if (mouse.left_down) {
@@ -693,7 +693,7 @@ const Game = struct {
             var tx: usize = 0;
             while (tx < self.level.office_w) : (tx += 1) {
                 const tile = self.level.office[ty * self.level.office_w + tx];
-                if (tile > 0) self.assets.office.draw_frame(renderer, tile - 1, @as(i32, @intCast(tx * 16)) - cami(self.camera_x), @as(i32, @intCast(ty * 16)) - cami(self.camera_y));
+                if (tile > 0) self.assets.office.draw_frame(renderer, tile - 1, @as(i32, @intCast(tx * 16)) - cami(self.camera_x) + self.worldOffsetX(), @as(i32, @intCast(ty * 16)) - cami(self.camera_y) + self.worldOffsetY());
             }
         }
         var order: [MAX_ENTITIES]usize = undefined;
@@ -707,7 +707,7 @@ const Game = struct {
         const e = self.entities[idx];
         if (!e.active) return;
         const inf = info(e.kind);
-        self.assets.sheet(inf.sheet).draw_frame(renderer, self.frameFor(idx), @as(i32, @intFromFloat(e.x)) - inf.off_x - cami(self.camera_x), @as(i32, @intFromFloat(e.y)) - inf.off_y - cami(self.camera_y));
+        self.assets.sheet(inf.sheet).draw_frame(renderer, self.frameFor(idx), @as(i32, @intFromFloat(e.x)) - inf.off_x - cami(self.camera_x) + self.worldOffsetX(), @as(i32, @intFromFloat(e.y)) - inf.off_y - cami(self.camera_y) + self.worldOffsetY());
     }
 
     fn drawHud(self: *Game, renderer: *Render) void {
@@ -855,12 +855,28 @@ const Game = struct {
         e.dir = dominantDir(e.vx, e.vy);
     }
 
+    fn worldPixelW(self: *Game) i32 {
+        return @as(i32, @intCast(self.level.collision_w)) * self.level.collision_tile;
+    }
+
+    fn worldPixelH(self: *Game) i32 {
+        return @as(i32, @intCast(self.level.collision_h)) * self.level.collision_tile;
+    }
+
+    fn worldOffsetX(self: *Game) i32 {
+        return @divFloor(@max(0, CONF.SCREEN_W - self.worldPixelW()), 2);
+    }
+
+    fn worldOffsetY(self: *Game) i32 {
+        return @divFloor(@max(0, CONF.SCREEN_H - self.worldPixelH()), 2);
+    }
+
     fn updateEditor(self: *Game, mouse: Mouse) void {
         if (self.editor.msg_timer > 0) self.editor.msg_timer -= 1;
         if (mouse.x >= EDITOR_PANEL_X) return;
         if (mouse.left_down or mouse.right_down) {
-            const wx = mouse.x + self.editor.camera_x;
-            const wy = mouse.y + self.editor.camera_y;
+            const wx = mouse.x - self.editorOffsetX() + self.editor.camera_x;
+            const wy = mouse.y - self.editorOffsetY() + self.editor.camera_y;
             switch (self.editor.mode) {
                 .tiles => self.paintEditorTile(wx, wy, if (mouse.right_down) 0 else self.editor.selected_tile),
                 .collision => self.paintEditorCollision(wx, wy, if (mouse.right_down) 0 else 1),
@@ -922,8 +938,8 @@ const Game = struct {
             var tx: usize = 0;
             while (tx < level.office_w) : (tx += 1) {
                 const tile = self.editor.level.office_buf[ty * level.office_w + tx];
-                const x = @as(i32, @intCast(tx * 16)) - self.editor.camera_x;
-                const y = @as(i32, @intCast(ty * 16)) - self.editor.camera_y;
+                const x = @as(i32, @intCast(tx * 16)) - self.editor.camera_x + self.editorOffsetX();
+                const y = @as(i32, @intCast(ty * 16)) - self.editor.camera_y + self.editorOffsetY();
                 if (tile > 0) self.assets.office.draw_frame(renderer, tile - 1, x, y);
                 renderer.draw_rect_lines(x, y, 16, 16, 0x303030);
             }
@@ -933,13 +949,13 @@ const Game = struct {
             var cx: usize = 0;
             while (cx < level.collision_w) : (cx += 1) {
                 if (self.editor.level.collision_buf[cy * level.collision_w + cx] != 0) {
-                    renderer.draw_rect_trans(@as(i32, @intCast(cx)) * level.collision_tile - self.editor.camera_x, @as(i32, @intCast(cy)) * level.collision_tile - self.editor.camera_y, level.collision_tile, level.collision_tile, 0x882222);
+                    renderer.draw_rect_trans(@as(i32, @intCast(cx)) * level.collision_tile - self.editor.camera_x + self.editorOffsetX(), @as(i32, @intCast(cy)) * level.collision_tile - self.editor.camera_y + self.editorOffsetY(), level.collision_tile, level.collision_tile, 0x882222);
                 }
             }
         }
         for (self.editor.level.entity_buf[0..self.editor.level.entity_count]) |def| {
             const inf = info(def.kind);
-            self.assets.sheet(inf.sheet).draw_frame(renderer, 0, def.x - inf.off_x - self.editor.camera_x, def.y - inf.off_y - self.editor.camera_y);
+            self.assets.sheet(inf.sheet).draw_frame(renderer, 0, def.x - inf.off_x - self.editor.camera_x + self.editorOffsetX(), def.y - inf.off_y - self.editor.camera_y + self.editorOffsetY());
         }
     }
 
@@ -1051,6 +1067,16 @@ const Game = struct {
         self.editor.camera_y = @min(@max(0, self.editor.camera_y + dy), max_y);
     }
 
+    fn editorOffsetX(self: *Game) i32 {
+        const w = @as(i32, @intCast(self.editor.level.level.office_w * 16));
+        return @divFloor(@max(0, EDITOR_PANEL_X - w), 2);
+    }
+
+    fn editorOffsetY(self: *Game) i32 {
+        const h = @as(i32, @intCast(self.editor.level.level.office_h * 16));
+        return @divFloor(@max(0, CONF.SCREEN_H - h), 2);
+    }
+
     fn playEditorLevel(self: *Game) void {
         self.editor.level.refreshSlices();
         self.level = &self.editor.level.level;
@@ -1091,7 +1117,10 @@ const Game = struct {
     }
 
     fn loadEditorSlot(self: *Game, slot: usize) !void {
-        try self.loadRuntimeLevel(slot, &self.editor.level);
+        self.loadRuntimeLevel(slot, &self.editor.level) catch |err| switch (err) {
+            error.FileNotFound => if (slot < Levels.playable.len) self.editor.level.copyFrom(Levels.playable[slot]) else return err,
+            else => return err,
+        };
         self.overrides[slot].copyFrom(&self.editor.level.level);
         self.editorMessage("LOADED");
     }
