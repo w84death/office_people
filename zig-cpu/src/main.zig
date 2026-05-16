@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const c = @cImport({
+    if (builtin.os.tag == .windows and builtin.cpu.arch == .x86) @cDefine("_X86_", "1");
     @cInclude("fenster.h");
     @cInclude("stdio.h");
     @cInclude("sys/stat.h");
@@ -1096,7 +1097,10 @@ const Game = struct {
     }
 
     fn saveEditorSlot(self: *Game, slot: usize) !void {
-        _ = c.mkdir("levels", 0o755);
+        switch (builtin.os.tag) {
+            .windows => _ = c.mkdir("levels"),
+            else => _ = c.mkdir("levels", 0o755),
+        }
         self.editor.level.refreshSlices();
         self.overrides[slot].copyFrom(&self.editor.level.level);
         var path_buf: [64]u8 = undefined;

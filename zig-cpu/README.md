@@ -4,6 +4,16 @@ Native Zig/software-rendered port of **Office People** using the small `fenster`
 
 The game is mouse-driven: move through the office, pick up objects, throw them at hostile coworkers, turn on every computer, then escape through the elevator.
 
+## Screenshots
+
+![Title screen](docs/titlescreen.png)
+
+![Level 2](docs/level2.png)
+
+![Level 3](docs/level3.png)
+
+![Editor](docs/editor.png)
+
 ## Features
 
 - Software rendering through `fenster`.

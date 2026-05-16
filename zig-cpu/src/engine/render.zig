@@ -5,7 +5,9 @@
 // *************************************
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @cImport({
+    if (builtin.os.tag == .windows and builtin.cpu.arch == .x86) @cDefine("_X86_", "1");
     @cInclude("fenster.h");
 });
 const CONF = @import("config.zig").CONF;
